@@ -1,0 +1,80 @@
+workflows:
+  ios-unsigned-ipa:
+    name: MyDrive iOS - Unsigned IPA
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+
+    environment:
+      xcode: latest
+      vars:
+        XCODE_PROJECT: "MyDrive.xcodeproj"
+        XCODE_SCHEME: "MyDrive"
+        APP_NAME: "MyDrive"
+
+    scripts:
+      - name: Environment check
+        script: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -project "$XCODE_PROJECT" -list
+
+      - name: Validate app icon
+        script: |
+          set -euo pipefail
+          ICON="$CM_BUILD_DIR/MyDrive/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          WIDTH=$(sips -g pixelWidth "$ICON" | awk '/pixelWidth/ {print $2}')
+          HEIGHT=$(sips -g pixelHeight "$ICON" | awk '/pixelHeight/ {print $2}')
+          test "$WIDTH" = "1024"
+          test "$HEIGHT" = "1024"
+
+      - name: Build unsigned app for real iPhone
+        script: |
+          set -euo pipefail
+          rm -rf "$CM_BUILD_DIR/build"
+          mkdir -p "$CM_BUILD_DIR/build"
+
+          xcodebuild \
+            -project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CM_BUILD_DIR/build/DerivedData" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            clean build
+
+      - name: Package unsigned IPA for Sideloadly
+        script: |
+          set -euo pipefail
+          APP_PATH="$CM_BUILD_DIR/build/DerivedData/Build/Products/Release-iphoneos/${APP_NAME}.app"
+          OUT_DIR="$CM_BUILD_DIR/build/ipa"
+          PAYLOAD_DIR="$OUT_DIR/Payload"
+          IPA_PATH="$OUT_DIR/${APP_NAME}-unsigned.ipa"
+
+          test -d "$APP_PATH"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          rm -rf "$PAYLOAD_DIR/${APP_NAME}.app/_CodeSignature" || true
+          rm -f "$PAYLOAD_DIR/${APP_NAME}.app/embedded.mobileprovision" || true
+          (cd "$OUT_DIR" && /usr/bin/zip -qry "$(basename "$IPA_PATH")" Payload)
+          echo "Created: $IPA_PATH"
+
+      - name: Validate artifact
+        script: |
+          set -euo pipefail
+          APP_PATH="$CM_BUILD_DIR/build/DerivedData/Build/Products/Release-iphoneos/${APP_NAME}.app"
+          IPA_PATH="$CM_BUILD_DIR/build/ipa/${APP_NAME}-unsigned.ipa"
+          test -f "$APP_PATH/$APP_NAME"
+          test -f "$IPA_PATH"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          echo "Unsigned IPA ready for Sideloadly."
+
+    artifacts:
+      - build/ipa/*.ipa
+      - build/DerivedData/Build/Products/Release-iphoneos/*.app
+      - /tmp/xcodebuild_logs/*.log
